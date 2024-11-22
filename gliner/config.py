@@ -30,6 +30,8 @@ class GLiNERConfig(PretrainedConfig):
                  labels_encoder_config: Optional[dict] = None,
                  ent_token = "<<ENT>>",
                  sep_token = "<<SEP>>",
+                 harmonics_dims: Optional[list[int]] = None,
+                 harmonics_weights: Optional[list[float]] = None,
                  **kwargs):
         super().__init__(**kwargs)
         if isinstance(encoder_config, dict):
@@ -68,6 +70,8 @@ class GLiNERConfig(PretrainedConfig):
         self.embed_ent_token = embed_ent_token
         self.ent_token = ent_token
         self.sep_token = sep_token
+        self.harmonics_dims = harmonics_dims
+        self.harmonics_weights = harmonics_weights
 
 # Register the configuration
 from transformers import CONFIG_MAPPING

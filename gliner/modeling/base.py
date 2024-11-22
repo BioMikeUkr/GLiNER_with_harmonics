@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 import warnings
@@ -227,6 +227,8 @@ class SpanModel(BaseModel):
                 span_idx: Optional[torch.LongTensor] = None,
                 span_mask: Optional[torch.LongTensor] = None,
                 labels: Optional[torch.FloatTensor] = None,
+                harmonics_dims: Optional[List[int]] = None,
+                harmonics_weights: Optional[List[float]] = None,
                 **kwargs
                 ):
 
@@ -239,11 +241,18 @@ class SpanModel(BaseModel):
         
         prompts_embedding = self.prompt_rep_layer(prompts_embedding)
 
-        scores = torch.einsum("BLKD,BCD->BLKC", span_rep, prompts_embedding)
+        if harmonics_dims and harmonics_weights:
+            loss = torch.tensor(0.0, device=prompts_embedding.device)
+            for dim, weight in zip(harmonics_dims, harmonics_weights):
+                scores = torch.einsum("BLKD,BCD->BLKC", span_rep[..., :dim], prompts_embedding[..., :dim])
+                current_loss = self.loss(scores, labels, prompts_embedding_mask, span_mask, **kwargs) * weight
+                loss += current_loss
+        else:
+            scores = torch.einsum("BLKD,BCD->BLKC", span_rep, prompts_embedding)
 
-        loss = None
-        if labels is not None:
-            loss = self.loss(scores, labels, prompts_embedding_mask, span_mask, **kwargs)
+            loss = None
+            if labels is not None:
+                loss = self.loss(scores, labels, prompts_embedding_mask, span_mask, **kwargs)
 
         output = GLiNERModelOutput(
             logits=scores,
@@ -332,6 +341,91 @@ class TokenModel(BaseModel):
         all_losses = self._loss(scores, labels, alpha, gamma, label_smoothing)
 
         all_losses = all_losses * prompts_embedding_mask.unsqueeze(1) * mask.unsqueeze(-1)
+
+        if reduction == "mean":
+            loss = all_losses.mean()
+        elif reduction == 'sum':
+            loss = all_losses.sum()
+        else:
+            warnings.warn(
+                f"Invalid Value for config 'loss_reduction': '{reduction} \n Supported reduction modes:"
+                f" 'none', 'mean', 'sum'. It will be used 'sum' instead.")
+            loss = all_losses.sum()
+        return loss
+
+class TokenDirectScoresModel(BaseModel):
+    def __init__(self, config, encoder_from_pretrained):
+        super(TokenDirectScoresModel, self).__init__(config, encoder_from_pretrained)
+        self.token_rep_layer = create_projection_layer(config.hidden_size, config.dropout)
+        self.prompt_rep_layer = create_projection_layer(config.hidden_size, config.dropout)
+
+
+    def forward(self,        
+                input_ids: Optional[torch.FloatTensor] = None,
+                attention_mask: Optional[torch.LongTensor] = None,
+                labels_embeddings: Optional[torch.FloatTensor] = None,
+                labels_input_ids: Optional[torch.FloatTensor] = None,
+                labels_attention_mask: Optional[torch.LongTensor] = None,
+                words_embedding: Optional[torch.FloatTensor] = None,
+                mask: Optional[torch.LongTensor] = None,
+                prompts_embedding: Optional[torch.FloatTensor] = None,
+                prompts_embedding_mask: Optional[torch.LongTensor] = None,
+                words_mask: Optional[torch.LongTensor] = None,
+                text_lengths: Optional[torch.Tensor] = None,
+                labels: Optional[torch.FloatTensor] = None,
+                harmonics_dims: Optional[List[int]] = None,
+                harmonics_weights: Optional[List[float]] = None,
+                **kwargs
+                ):
+
+        prompts_embedding, prompts_embedding_mask, words_embedding, mask = self.get_representations(input_ids, attention_mask,
+                                                                            labels_embeddings, labels_input_ids, labels_attention_mask,
+                                                                                                                text_lengths, words_mask)
+        
+        span_rep = self.span_rep_layer(words_embedding)
+        prompts_embedding = self.prompt_rep_layer(prompts_embedding)
+
+        if harmonics_dims and harmonics_weights:
+            loss = torch.tensor(0.0, device=prompts_embedding.device)
+            for dim, weight in zip(harmonics_dims, harmonics_weights):
+                scores = torch.einsum("BLKD,BCD->BLKC", span_rep[..., :dim], prompts_embedding[..., :dim])
+                current_loss = self.loss(scores, labels, prompts_embedding_mask, mask, **kwargs) * weight
+                loss += current_loss
+        else:
+            scores = torch.einsum("BLKD,BCD->BLKC", span_rep, prompts_embedding)
+
+            loss = None
+            if labels is not None:
+                loss = self.loss(scores, labels, prompts_embedding_mask, mask, **kwargs)
+        
+        output = GLiNERModelOutput(
+            logits=scores,
+            loss=loss,
+            prompts_embedding=prompts_embedding,
+            prompts_embedding_mask=prompts_embedding_mask,
+            words_embedding=words_embedding,
+            mask=mask,
+        )
+        return output
+    
+    def loss(self, scores, labels, prompts_embedding_mask, mask_label,
+                        alpha: float = -1., gamma: float = 0.0, label_smoothing: float = 0.0, 
+                        reduction: str = 'sum', **kwargs):
+        
+        batch_size = scores.shape[0]
+        num_classes = prompts_embedding_mask.shape[-1]
+
+        scores = scores.view(-1, num_classes)
+        labels = labels.view(-1, num_classes)
+        
+        all_losses = self._loss(scores, labels, alpha, gamma, label_smoothing)
+
+        masked_loss = all_losses.view(batch_size, -1, num_classes) * prompts_embedding_mask.unsqueeze(1)
+        all_losses = masked_loss.view(-1, num_classes)
+
+        mask_label = mask_label.view(-1, 1)
+        
+        all_losses = all_losses * mask_label.float()
 
         if reduction == "mean":
             loss = all_losses.mean()

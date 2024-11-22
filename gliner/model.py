@@ -21,7 +21,7 @@ from .data_processing.collator import DataCollator, DataCollatorWithPadding
 from .data_processing.tokenizer import WordsSplitter
 from .decoding import SpanDecoder, TokenDecoder
 from .evaluation import Evaluator
-from .modeling.base import BaseModel, SpanModel, TokenModel
+from .modeling.base import BaseModel, SpanModel, TokenModel, TokenDirectScoresModel
 from .onnx.model import BaseORTModel, SpanORTModel, TokenORTModel
 
 
@@ -70,6 +70,23 @@ class GLiNER(nn.Module, PyTorchModelHubMixin):
             else:
                 self.data_processor = data_processor
             self.decoder = TokenDecoder(config)
+
+        elif config.span_mode == "token_level_direct_scores":
+            if model is None:
+                self.model = TokenDirectScoresModel(config, encoder_from_pretrained)
+            else:
+                self.model = model
+            if data_processor is None:
+                if config.labels_encoder is not None:
+                    labels_tokenizer = AutoTokenizer.from_pretrained(config.labels_encoder)
+                    self.data_processor = TokenBiEncoderProcessor(config, tokenizer, words_splitter, labels_tokenizer)
+                else:
+                    self.data_processor = TokenProcessor(config, tokenizer, words_splitter)
+
+            else:
+                self.data_processor = data_processor
+            self.decoder = TokenDecoder(config)
+
         else:
             if model is None:
                 self.model = SpanModel(config, encoder_from_pretrained)

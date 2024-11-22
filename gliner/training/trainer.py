@@ -27,7 +27,9 @@ class TrainingArguments(transformers.TrainingArguments):
     focal_loss_alpha: Optional[float] = -1
     focal_loss_gamma: Optional[float] = 0
     label_smoothing: Optional[float] = 0
-    loss_reduction: Optional[str] = 'sum' 
+    loss_reduction: Optional[str] = 'sum'
+    harmonics_dims: Optional[List[str]] = None
+    harmonics_weights: Optional[List[float]] = None
 
 class Trainer(transformers.Trainer):
     def training_step(self, model, inputs) -> torch.Tensor:
@@ -95,6 +97,8 @@ class Trainer(transformers.Trainer):
                         gamma = self.args.focal_loss_gamma,
                         label_smoothing = self.args.label_smoothing,
                         reduction = self.args.loss_reduction,
+                        harmonics_dims=self.args.harmonics_dims,
+                        harmonics_weights=self.args.harmonics_weights,
                         **inputs)
         loss = outputs.loss
         return loss
