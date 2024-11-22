@@ -382,7 +382,7 @@ class TokenDirectScoresModel(BaseModel):
                                                                             labels_embeddings, labels_input_ids, labels_attention_mask,
                                                                                                                 text_lengths, words_mask)
         
-        span_rep = self.span_rep_layer(words_embedding)
+        span_rep = self.token_rep_layer(words_embedding)
         prompts_embedding = self.prompt_rep_layer(prompts_embedding)
 
         if harmonics_dims and harmonics_weights:
