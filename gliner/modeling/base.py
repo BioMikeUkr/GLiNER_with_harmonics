@@ -388,7 +388,7 @@ class TokenDirectScoresModel(BaseModel):
         if harmonics_dims and harmonics_weights:
             loss = torch.tensor(0.0, device=prompts_embedding.device)
             for dim, weight in zip(harmonics_dims, harmonics_weights):
-                scores = torch.einsum("BLKD,BCD->BLKC", token_rep[..., :dim], prompts_embedding[..., :dim])
+                scores = torch.einsum("BCD,BCD->BLKC", token_rep[..., :dim], prompts_embedding[..., :dim])
                 current_loss = self.loss(scores, labels, prompts_embedding_mask, mask, **kwargs) * weight
                 loss += current_loss
         else:
