@@ -356,8 +356,8 @@ class TokenModel(BaseModel):
 class TokenDirectScoresModel(BaseModel):
     def __init__(self, config, encoder_from_pretrained):
         super(TokenDirectScoresModel, self).__init__(config, encoder_from_pretrained)
-        self.token_rep_layer = create_projection_layer(config.hidden_size, config.dropout)
-        self.prompt_rep_layer = create_projection_layer(config.hidden_size, config.dropout)
+        self.token_proj_layer = create_projection_layer(config.hidden_size, config.dropout)
+        self.prompt_proj_layer = create_projection_layer(config.hidden_size, config.dropout)
 
 
     def forward(self,        
@@ -382,17 +382,17 @@ class TokenDirectScoresModel(BaseModel):
                                                                             labels_embeddings, labels_input_ids, labels_attention_mask,
                                                                                                                 text_lengths, words_mask)
         
-        span_rep = self.token_rep_layer(words_embedding)
-        prompts_embedding = self.prompt_rep_layer(prompts_embedding)
+        token_rep = self.token_proj_layer(words_embedding)
+        prompts_embedding = self.prompt_proj_layer(prompts_embedding)
 
         if harmonics_dims and harmonics_weights:
             loss = torch.tensor(0.0, device=prompts_embedding.device)
             for dim, weight in zip(harmonics_dims, harmonics_weights):
-                scores = torch.einsum("BLKD,BCD->BLKC", span_rep[..., :dim], prompts_embedding[..., :dim])
+                scores = torch.einsum("BLKD,BCD->BLKC", token_rep[..., :dim], prompts_embedding[..., :dim])
                 current_loss = self.loss(scores, labels, prompts_embedding_mask, mask, **kwargs) * weight
                 loss += current_loss
         else:
-            scores = torch.einsum("BLKD,BCD->BLKC", span_rep, prompts_embedding)
+            scores = torch.einsum("BLKD,BCD->BLKC", token_rep, prompts_embedding)
 
             loss = None
             if labels is not None:
