@@ -351,14 +351,13 @@ class TokenModel(BaseModel):
                 f"Invalid Value for config 'loss_reduction': '{reduction} \n Supported reduction modes:"
                 f" 'none', 'mean', 'sum'. It will be used 'sum' instead.")
             loss = all_losses.sum()
-        return loss
+        return loss    
+
 
 class TokenDirectScoresModel(BaseModel):
     def __init__(self, config, encoder_from_pretrained):
         super(TokenDirectScoresModel, self).__init__(config, encoder_from_pretrained)
-        self.token_proj_layer = create_projection_layer(config.hidden_size, config.dropout)
-        self.prompt_proj_layer = create_projection_layer(config.hidden_size, config.dropout)
-
+        self.scorer = Scorer(config.hidden_size, config.dropout)
 
     def forward(self,        
                 input_ids: Optional[torch.FloatTensor] = None,
@@ -375,29 +374,29 @@ class TokenDirectScoresModel(BaseModel):
                 labels: Optional[torch.FloatTensor] = None,
                 harmonics_dims: Optional[List[int]] = None,
                 harmonics_weights: Optional[List[float]] = None,
-                **kwargs
-                ):
-
-        prompts_embedding, prompts_embedding_mask, words_embedding, mask = self.get_representations(input_ids, attention_mask,
-                                                                            labels_embeddings, labels_input_ids, labels_attention_mask,
-                                                                                                                text_lengths, words_mask)
+                **kwargs):
         
-        token_rep = self.token_proj_layer(words_embedding)
-        prompts_embedding = self.prompt_proj_layer(prompts_embedding)
-
+        prompts_embedding, prompts_embedding_mask, words_embedding, mask = self.get_representations(
+            input_ids, attention_mask, labels_embeddings, labels_input_ids, labels_attention_mask, 
+            text_lengths, words_mask
+        )
+        
+        loss = None
         if harmonics_dims and harmonics_weights:
             loss = torch.tensor(0.0, device=prompts_embedding.device)
             for dim, weight in zip(harmonics_dims, harmonics_weights):
-                scores = torch.einsum("BCD,BCD->BLKC", token_rep[..., :dim], prompts_embedding[..., :dim])
-                current_loss = self.loss(scores, labels, prompts_embedding_mask, mask, **kwargs) * weight
+                padded_prompts = self._pad_embeddings(prompts_embedding, dim)
+                padded_words = self._pad_embeddings(words_embedding, dim)
+
+                harmonic_scores = self.scorer(padded_words, padded_prompts)
+                current_loss = self.loss(harmonic_scores, labels, prompts_embedding_mask, mask, **kwargs) * weight
                 loss += current_loss
         else:
-            scores = torch.einsum("BLKD,BCD->BLKC", token_rep, prompts_embedding)
-
-            loss = None
+            scores = self.scorer(words_embedding, prompts_embedding)
             if labels is not None:
-                loss = self.loss(scores, labels, prompts_embedding_mask, mask, **kwargs)
-        
+                main_loss = self.loss(scores, labels, prompts_embedding_mask, mask, **kwargs)
+                loss = loss + main_loss if loss is not None else main_loss
+
         output = GLiNERModelOutput(
             logits=scores,
             loss=loss,
@@ -407,33 +406,31 @@ class TokenDirectScoresModel(BaseModel):
             mask=mask,
         )
         return output
-    
-    def loss(self, scores, labels, prompts_embedding_mask, mask_label,
-                        alpha: float = -1., gamma: float = 0.0, label_smoothing: float = 0.0, 
-                        reduction: str = 'sum', **kwargs):
-        
-        batch_size = scores.shape[0]
-        num_classes = prompts_embedding_mask.shape[-1]
 
-        scores = scores.view(-1, num_classes)
-        labels = labels.view(-1, num_classes)
-        
+    def loss(self, scores, labels, prompts_embedding_mask, mask, 
+             alpha: float = -1.0, gamma: float = 0.0, label_smoothing: float = 0.0, 
+             reduction: str = 'sum', **kwargs):
         all_losses = self._loss(scores, labels, alpha, gamma, label_smoothing)
-
-        masked_loss = all_losses.view(batch_size, -1, num_classes) * prompts_embedding_mask.unsqueeze(1)
-        all_losses = masked_loss.view(-1, num_classes)
-
-        mask_label = mask_label.view(-1, 1)
         
-        all_losses = all_losses * mask_label.float()
+        all_losses = all_losses * prompts_embedding_mask.unsqueeze(1) * mask.unsqueeze(-1)
 
         if reduction == "mean":
             loss = all_losses.mean()
-        elif reduction == 'sum':
+        elif reduction == "sum":
             loss = all_losses.sum()
         else:
             warnings.warn(
-                f"Invalid Value for config 'loss_reduction': '{reduction} \n Supported reduction modes:"
-                f" 'none', 'mean', 'sum'. It will be used 'sum' instead.")
+                f"Invalid reduction mode '{reduction}' provided. Defaulting to 'sum'."
+            )
             loss = all_losses.sum()
         return loss
+
+    def _pad_embeddings(self, embeddings, target_dim):
+        """Pads embeddings to the target dimension with zeros."""
+        current_dim = embeddings.size(-1)
+        if current_dim >= target_dim:
+            return embeddings[..., :target_dim]
+        
+        pad_size = target_dim - current_dim
+        padding = torch.zeros(*embeddings.size()[:-1], pad_size, device=embeddings.device)
+        return torch.cat([embeddings, padding], dim=-1)
